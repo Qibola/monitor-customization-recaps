@@ -1,0 +1,35 @@
+name: Slack Recaps
+
+on:
+  schedule:
+    # Runs daily at ~13:10 UTC (6:10/7:10 AM America/Denver depending on DST)
+    - cron: "10 13 * * *"
+    # Runs weekly on Mondays at ~13:15 UTC
+    - cron: "15 13 * * MON"
+  workflow_dispatch: {}
+
+jobs:
+  recap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Daily recap
+        if: ${{ github.event.schedule == '10 13 * * *' || github.event_name == 'workflow_dispatch' }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          POST_TO_CHANNEL_ID: ${{ secrets.POST_TO_CHANNEL_ID }}
+          MODE: DAILY
+        run: python recap_bot.py
+      - name: Weekly recap
+        if: ${{ github.event.schedule == '15 13 * * MON' || github.event_name == 'workflow_dispatch' }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          POST_TO_CHANNEL_ID: ${{ secrets.POST_TO_CHANNEL_ID }}
+          MODE: WEEKLY
+        run: python recap_bot.py
