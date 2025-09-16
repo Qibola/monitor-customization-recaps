@@ -38,12 +38,13 @@ jobs:
       - name: Decide MODE for scheduled runs
         if: ${{ github.event_name == 'schedule' }}
         run: |
-          DOW=$(TZ=America/Denver date +%u)   # 1=Mon
-          if [ "$DOW" = "1" ]; then
-            echo "MODE=WEEKLY" >> $GITHUB_ENV
+          DOW=$(TZ=America/Denver date +%u)   # 1=Mon ... 5=Fri ... 7=Sun
+          if [ "$DOW" = "5" ]; then
+            echo "MODE=WEEKLY" >> $GITHUB_ENV   # Fridays → weekly
           else
-            echo "MODE=DAILY" >> $GITHUB_ENV
+            echo "MODE=DAILY" >> $GITHUB_ENV    # all other days → daily
           fi
+    
 
       # For manual runs, use the chosen input
       - name: Set MODE for manual runs
