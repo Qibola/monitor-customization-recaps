@@ -201,7 +201,7 @@ def post_daily_typeform_today(channel_id: str):
     s = summarize_typeform_today(channel_id)
     blocks = [
         {"type": "header", "text": {"type": "plain_text",
-         "text": f"Daily Typeform recap – {s['date_label']} (so far)"}},
+         "text": f"Daily recap – {s['date_label']} (so far)"}},
         {"type": "section", "text": {"type": "mrkdwn",
          "text": f"*Typeform messages today:* {s['total']}"}},
         {"type": "context", "elements": [
@@ -223,7 +223,7 @@ def post_weekly_typeform(channel_id: str, now_local: datetime):
     chart = _bar_chart(rows)
 
     blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": "Weekly Typeform recap – last 7 days"}},
+        {"type": "header", "text": {"type": "plain_text", "text": "Weekly recap – last 7 days"}},
         {"type": "section", "text": {"type": "mrkdwn",
          "text": f"*Total Typeform messages:* {total}\n*Daily average:* {avg}"}},
     ]
