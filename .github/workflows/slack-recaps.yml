@@ -9,56 +9,81 @@ on:
         options: [DRYRUN, DAILY, WEEKLY]
         default: DRYRUN
       post_to_channel_id:
-        description: "Override channel ID to post into (optional, e.g. C0123ABCDEF)"
+        description: "Override channel ID to post into (e.g., C0123ABCDEF) — optional"
         required: false
         type: string
   schedule:
-    # Daily ~6:10/7:10 AM America/Denver
-    - cron: "10 13 * * *"
-    # Weekly Mondays ~6:15/7:15 AM America/Denver
-    - cron: "15 13 * * MON"
+    # Fire around the local 5pm boundary in Denver for both DST/Standard time.
+    - cron: "0 23 * * *"   # 5pm during MDT
+    - cron: "0 0 * * *"    # 5pm during MST
+
+concurrency:
+  group: slack-recaps
+  cancel-in-progress: false
 
 jobs:
   recap:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - run: pip install -r requirements.txt
 
-      # Determine MODE for scheduled runs
-      - name: Set MODE (scheduled)
+      # Decide mode automatically for scheduled runs (Mon=weekly, else=daily)
+      - name: Decide MODE for scheduled runs
         if: ${{ github.event_name == 'schedule' }}
         run: |
-          if [ "${{ github.event.schedule }}" = "10 13 * * *" ]; then
-            echo "MODE=DAILY" >> $GITHUB_ENV
-          elif [ "${{ github.event.schedule }}" = "15 13 * * MON" ]; then
+          DOW=$(TZ=America/Denver date +%u)   # 1=Mon
+          if [ "$DOW" = "1" ]; then
             echo "MODE=WEEKLY" >> $GITHUB_ENV
           else
             echo "MODE=DAILY" >> $GITHUB_ENV
           fi
 
-      # Set MODE for manual runs
-      - name: Set MODE (manual)
+      # For manual runs, use the chosen input
+      - name: Set MODE for manual runs
         if: ${{ github.event_name == 'workflow_dispatch' }}
         run: echo "MODE=${{ inputs.mode }}" >> $GITHUB_ENV
 
-      # Helpful debug (no secrets printed)
+      # Only proceed when it's exactly 5pm local (skips the non-5pm cron)
+      - name: Gate to 5pm America/Denver
+        if: ${{ github.event_name == 'schedule' }}
+        run: |
+          HOUR=$(TZ=America/Denver date +%H)
+          if [ "$HOUR" = "17" ]; then
+            echo "RUN_RECAP=1" >> $GITHUB_ENV
+          else
+            echo "Not 5pm local — skipping."
+          fi
+
       - name: Debug
         run: |
           echo "MODE=$MODE"
           echo "CHANNEL_ID length: ${#CHANNEL_ID}"
-          if [ -n "$POST_TO_CHANNEL_ID" ]; then echo "Will post to POST_TO_CHANNEL_ID"; else echo "Will post to CHANNEL_ID"; fi
+          if [ -n "${{ inputs.post_to_channel_id }}" ]; then
+            echo "Manual override: will post to inputs.post_to_channel_id"
+          elif [ -n "$POST_TO_CHANNEL_ID" ]; then
+            echo "Will post to POST_TO_CHANNEL_ID secret"
+          else
+            echo "No override set: will post to CHANNEL_ID"
+          fi
         env:
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
-          POST_TO_CHANNEL_ID: ${{ inputs.post_to_channel_id != '' && inputs.post_to_channel_id || secrets.POST_TO_CHANNEL_ID }}
+          POST_TO_CHANNEL_ID: ${{ secrets.POST_TO_CHANNEL_ID }}
 
       - name: Run recap bot
+        # Manual runs always allowed; scheduled runs only when it's 5pm local.
+        if: ${{ github.event_name == 'workflow_dispatch' || env.RUN_RECAP == '1' }}
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          # If provided via manual input, use that; else fall back to secret (can be empty).
           POST_TO_CHANNEL_ID: ${{ inputs.post_to_channel_id != '' && inputs.post_to_channel_id || secrets.POST_TO_CHANNEL_ID }}
           MODE: ${{ env.MODE }}
+          TZ_NAME: America/Denver
         run: python recap_bot.py
