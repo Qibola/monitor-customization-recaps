@@ -13,7 +13,8 @@ TZ = ZoneInfo("America/Denver")
 
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 CHANNEL_ID = os.environ["CHANNEL_ID"]  # e.g. C0123ABCDEF
-POST_TO_CHANNEL_ID = os.environ.get("POST_TO_CHANNEL_ID", CHANNEL_ID)  # where to post recaps
+POST_TO_CHANNEL_ID = os.environ.get("POST_TO_CHANNEL_ID") or CHANNEL_ID
+
 
 client = WebClient(token=SLACK_BOT_TOKEN)
 
