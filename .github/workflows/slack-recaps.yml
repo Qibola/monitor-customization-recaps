@@ -1,12 +1,22 @@
 name: Slack Recaps
 
 on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run mode"
+        type: choice
+        options: [DRYRUN, DAILY, WEEKLY]
+        default: DRYRUN
+      post_to_channel_id:
+        description: "Override channel ID to post into (optional, e.g. C0123ABCDEF)"
+        required: false
+        type: string
   schedule:
-    # Runs daily at ~13:10 UTC (6:10/7:10 AM America/Denver depending on DST)
+    # Daily ~6:10/7:10 AM America/Denver
     - cron: "10 13 * * *"
-    # Runs weekly on Mondays at ~13:15 UTC
+    # Weekly Mondays ~6:15/7:15 AM America/Denver
     - cron: "15 13 * * MON"
-  workflow_dispatch: {}
 
 jobs:
   recap:
@@ -17,19 +27,38 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt
-      - name: Daily recap
-        if: ${{ github.event.schedule == '10 13 * * *' || github.event_name == 'workflow_dispatch' }}
+
+      # Determine MODE for scheduled runs
+      - name: Set MODE (scheduled)
+        if: ${{ github.event_name == 'schedule' }}
+        run: |
+          if [ "${{ github.event.schedule }}" = "10 13 * * *" ]; then
+            echo "MODE=DAILY" >> $GITHUB_ENV
+          elif [ "${{ github.event.schedule }}" = "15 13 * * MON" ]; then
+            echo "MODE=WEEKLY" >> $GITHUB_ENV
+          else
+            echo "MODE=DAILY" >> $GITHUB_ENV
+          fi
+
+      # Set MODE for manual runs
+      - name: Set MODE (manual)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: echo "MODE=${{ inputs.mode }}" >> $GITHUB_ENV
+
+      # Helpful debug (no secrets printed)
+      - name: Debug
+        run: |
+          echo "MODE=$MODE"
+          echo "CHANNEL_ID length: ${#CHANNEL_ID}"
+          if [ -n "$POST_TO_CHANNEL_ID" ]; then echo "Will post to POST_TO_CHANNEL_ID"; else echo "Will post to CHANNEL_ID"; fi
+        env:
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          POST_TO_CHANNEL_ID: ${{ inputs.post_to_channel_id != '' && inputs.post_to_channel_id || secrets.POST_TO_CHANNEL_ID }}
+
+      - name: Run recap bot
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
-          POST_TO_CHANNEL_ID: ${{ secrets.POST_TO_CHANNEL_ID }}
-          MODE: DAILY
-        run: python recap_bot.py
-      - name: Weekly recap
-        if: ${{ github.event.schedule == '15 13 * * MON' || github.event_name == 'workflow_dispatch' }}
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
-          POST_TO_CHANNEL_ID: ${{ secrets.POST_TO_CHANNEL_ID }}
-          MODE: WEEKLY
+          POST_TO_CHANNEL_ID: ${{ inputs.post_to_channel_id != '' && inputs.post_to_channel_id || secrets.POST_TO_CHANNEL_ID }}
+          MODE: ${{ env.MODE }}
         run: python recap_bot.py
