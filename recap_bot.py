@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
 Slack Typeform Recap Bot
-- DAILY  : Posts today's Typeform message count (00:00 local -> now)
+
+- DAILY  : Posts *yesterday's full day* Typeform message count (local 00:00–24:00)
 - WEEKLY : Posts a 7-day bar chart of Typeform counts (last 7 full local days, ending yesterday)
 - DRYRUN : Prints the same summaries to stdout (no Slack post)
 
 Env vars (required):
   SLACK_BOT_TOKEN      xoxb-...
   CHANNEL_ID           Target channel to analyze (C... or G...)
+
 Optional:
   POST_TO_CHANNEL_ID   Channel to post recaps to (defaults to CHANNEL_ID)
   TZ_NAME              IANA tz (default: America/Denver)
+  TYPEFORM_APP_ID      If set, only count messages where bot_profile.app_id == this
 
-Scopes needed (public channel): channels:read, channels:history, chat:write
+Scopes needed (public channel): channels:read, channels:history, chat:write, users:read
 If the channel is private, also add: groups:read, groups:history
 Make sure the bot is invited to the channel you are analyzing/posting to.
 """
@@ -20,13 +23,13 @@ Make sure the bot is invited to the channel you are analyzing/posting to.
 import os
 import math
 import time
-from collections import Counter
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
+BOT_VERSION = "typeform-only v2 (daily=yesterday, weekly=week ending)"
 
 # ---------- Config / Globals ----------
 
@@ -37,6 +40,9 @@ SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 CHANNEL_ID = os.environ["CHANNEL_ID"]
 # IMPORTANT: treat empty as unset; fall back to CHANNEL_ID
 POST_TO_CHANNEL_ID = os.environ.get("POST_TO_CHANNEL_ID") or CHANNEL_ID
+
+# Optional hard match to Typeform app id (recommended if you know it)
+TYPEFORM_APP_ID = os.environ.get("TYPEFORM_APP_ID")
 
 client = WebClient(token=SLACK_BOT_TOKEN)
 
@@ -78,8 +84,8 @@ def _list_messages(channel_id: str, oldest: float, latest: float):
 
 def _is_typeform_message(msg: dict) -> bool:
     """
-    Return True if this Slack message is from the Typeform app/bot.
-    We intentionally *ignore human messages* and count *only* Typeform posts.
+    True if this message is from the Typeform app/bot.
+    We intentionally ignore human messages and count only Typeform posts.
     """
     # Ignore Slack housekeeping subtypes (edits/deletes/joins/etc.)
     subtype = msg.get("subtype")
@@ -89,15 +95,17 @@ def _is_typeform_message(msg: dict) -> bool:
     }:
         return False
 
-    # Many app messages arrive as subtype='bot_message' with bot_profile.name
+    # If the app_id is known, prefer that (rock-solid)
     bp = msg.get("bot_profile") or {}
+    if TYPEFORM_APP_ID and bp.get("app_id") == TYPEFORM_APP_ID:
+        return True
+
+    # Otherwise, check bot names/usernames for 'typeform'
     name_candidates = [
         (bp.get("name") or "").lower(),
         (bp.get("username") or "").lower(),
         (msg.get("username") or "").lower(),
     ]
-
-    # Heuristic: treat anything that clearly says "typeform" as Typeform
     if any("typeform" in s for s in name_candidates):
         return True
 
@@ -116,15 +124,6 @@ def _day_window_local(day: datetime):
     start = datetime(day.year, day.month, day.day, 0, 0, 0, tzinfo=TZ)
     end = start + timedelta(days=1)
     return _ts(start), _ts(end), start, end
-
-
-def _today_window_until_now():
-    """
-    From local midnight to 'now' (local).
-    """
-    now = datetime.now(TZ)
-    start = datetime(now.year, now.month, now.day, 0, 0, 0, tzinfo=TZ)
-    return _ts(start), _ts(now), start, now
 
 
 def _date_label(dt: datetime) -> str:
@@ -153,21 +152,6 @@ def _bar_chart(rows):
 
 # ---------- Summaries (Typeform only) ----------
 
-def summarize_typeform_today(channel_id: str):
-    """
-    Count Typeform messages today so far (local day start -> now).
-    """
-    oldest, latest, start_dt, _ = _today_window_until_now()
-    count = 0
-    for msg in _list_messages(channel_id, oldest, latest):
-        if _is_typeform_message(msg):
-            count += 1
-    return {
-        "date_label": _date_label(start_dt),
-        "total": count,
-    }
-
-
 def summarize_typeform_for_day(channel_id: str, day: datetime):
     """
     Count Typeform messages for the full local calendar day.
@@ -177,10 +161,13 @@ def summarize_typeform_for_day(channel_id: str, day: datetime):
     for msg in _list_messages(channel_id, oldest, latest):
         if _is_typeform_message(msg):
             count += 1
-    return {
-        "date_label": _date_label(start_dt),
-        "total": count,
-    }
+    return {"date_label": _date_label(start_dt), "total": count}
+
+
+def summarize_typeform_yesterday(channel_id: str):
+    now_local = datetime.now(TZ)
+    y = datetime(now_local.year, now_local.month, now_local.day, tzinfo=TZ) - timedelta(days=1)
+    return summarize_typeform_for_day(channel_id, y)
 
 
 def summarize_typeform_week(channel_id: str, end_day_inclusive: datetime):
@@ -197,13 +184,13 @@ def summarize_typeform_week(channel_id: str, end_day_inclusive: datetime):
 
 # ---------- Posting ----------
 
-def post_daily_typeform_today(channel_id: str):
-    s = summarize_typeform_today(channel_id)
+def post_daily_typeform_yesterday(channel_id: str):
+    s = summarize_typeform_yesterday(channel_id)
     blocks = [
         {"type": "header", "text": {"type": "plain_text",
-         "text": f"Daily recap – {s['date_label']} (so far)"}},
+         "text": f"Daily Typeform recap – {s['date_label']} (full day)"}},
         {"type": "section", "text": {"type": "mrkdwn",
-         "text": f"*Typeform messages today:* {s['total']}"}},
+         "text": f"*Typeform messages:* {s['total']}"}},
         {"type": "context", "elements": [
             {"type": "mrkdwn", "text": f"Channel: <#{channel_id}> • Counting only Typeform bot posts • Timezone: {TZ.key}"}
         ]},
@@ -213,7 +200,8 @@ def post_daily_typeform_today(channel_id: str):
 
 def post_weekly_typeform(channel_id: str, now_local: datetime):
     """
-    Weekly at 5pm local (or whenever you run it): show the last 7 *full* days, ending yesterday.
+    Weekly: show the last 7 *full* days, ending yesterday.
+    Header reads "week ending <yesterday>".
     """
     yesterday = datetime(now_local.year, now_local.month, now_local.day, tzinfo=TZ) - timedelta(days=1)
     week = summarize_typeform_week(channel_id, yesterday)
@@ -221,9 +209,11 @@ def post_weekly_typeform(channel_id: str, now_local: datetime):
     total = sum(v for _, v in rows)
     avg = round(total / len(rows), 2)
     chart = _bar_chart(rows)
+    end_label = _date_label(yesterday)
 
     blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": "Weekly recap – last 7 days"}},
+        {"type": "header", "text": {"type": "plain_text",
+         "text": f"Weekly Typeform recap – week ending {end_label}"}},
         {"type": "section", "text": {"type": "mrkdwn",
          "text": f"*Total Typeform messages:* {total}\n*Daily average:* {avg}"}},
     ]
@@ -238,25 +228,23 @@ def post_weekly_typeform(channel_id: str, now_local: datetime):
 # ---------- Main ----------
 
 def main():
+    print(f"[recap_bot] starting {BOT_VERSION}")
     mode = os.environ.get("MODE", "DAILY").upper()
 
-    # Light sanity warnings (don't hard-fail CI unless truly missing)
     if not CHANNEL_ID or not (CHANNEL_ID.startswith("C") or CHANNEL_ID.startswith("G")):
         print("WARNING: CHANNEL_ID is missing or not a channel ID (should start with C or G)")
 
     now_local = datetime.now(TZ)
 
     if mode == "DAILY":
-        post_daily_typeform_today(CHANNEL_ID)
+        post_daily_typeform_yesterday(CHANNEL_ID)
     elif mode == "WEEKLY":
         post_weekly_typeform(CHANNEL_ID, now_local)
     elif mode == "DRYRUN":
-        today = summarize_typeform_today(CHANNEL_ID)
-        print({"today": today})
-        # Include yesterday too for convenience
-        yday = now_local - timedelta(days=1)
-        ysum = summarize_typeform_for_day(CHANNEL_ID, yday)
-        print({"yesterday": ysum})
+        today = summarize_typeform_for_day(CHANNEL_ID, now_local)  # useful for quick checks
+        print({"today_full": today})
+        ysum = summarize_typeform_yesterday(CHANNEL_ID)
+        print({"yesterday_full": ysum})
     else:
         raise SystemExit(f"Unknown MODE: {mode}")
 
