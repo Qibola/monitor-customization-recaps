@@ -6,7 +6,7 @@ on:
       mode:
         description: "Run mode"
         type: choice
-        options: [DRYRUN, DAILY, WEEKLY]
+        options: [DRYRUN, DAILY, WEEKLY, MONTHLY]
         default: DRYRUN
       post_to_channel_id:
         description: "Override channel ID to post into (e.g., C0123ABCDEF) — optional"
@@ -16,9 +16,9 @@ on:
     # DAILY: run at 08:30 America/Denver to schedule delivery for 09:00
     - cron: "30 14 * * *"   # 08:30 during MDT (UTC-6)
     - cron: "30 15 * * *"   # 08:30 during MST (UTC-7)
-    # WEEKLY (Friday): run at 13:30 America/Denver to schedule delivery for 14:00
-    - cron: "30 19 * * 5"   # 13:30 Fri during MDT
-    - cron: "30 20 * * 5"   # 13:30 Fri during MST
+    # WEEKLY/MONTHLY check slot: 13:30 America/Denver (we'll gate to Fri for weekly, last day for monthly)
+    - cron: "30 19 * * *"   # 13:30 during MDT
+    - cron: "30 20 * * *"   # 13:30 during MST
 
 concurrency:
   group: slack-recaps
@@ -39,25 +39,40 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      # Decide whether to run and what MODE + target delivery time to use.
+      # Decide whether to run and which MODE + target delivery time to use.
       - name: Decide MODE & set schedule target
         if: ${{ github.event_name == 'schedule' }}
         run: |
           H=$(TZ=America/Denver date +%H)
           DOW=$(TZ=America/Denver date +%u)  # 5=Fri
-          echo "Local hour: $H  DOW: $DOW"
+          # Tomorrow day-of-month; "01" means today is the last day of the month
+          TOMORROW_DAY=$(TZ=America/Denver date -d 'tomorrow' +%d)
+          echo "Local hour: $H  DOW: $DOW  Tomorrow day: $TOMORROW_DAY"
+
+          # 08:30 local → DAILY for 09:00
           if [ "$H" = "08" ]; then
             echo "MODE=DAILY" >> $GITHUB_ENV
             echo "SCHEDULE_AT_LOCAL=09:00" >> $GITHUB_ENV
             echo "RUN_RECAP=1" >> $GITHUB_ENV
             exit 0
           fi
-          if [ "$H" = "13" ] && [ "$DOW" = "5" ]; then
-            echo "MODE=WEEKLY" >> $GITHUB_ENV
-            echo "SCHEDULE_AT_LOCAL=14:00" >> $GITHUB_ENV
-            echo "RUN_RECAP=1" >> $GITHUB_ENV
-            exit 0
+
+          # 13:30 local → Monthly if last day, else Weekly on Fridays (14:00)
+          if [ "$H" = "13" ]; then
+            if [ "$TOMORROW_DAY" = "01" ]; then
+              echo "MODE=MONTHLY" >> $GITHUB_ENV
+              echo "SCHEDULE_AT_LOCAL=14:00" >> $GITHUB_ENV
+              echo "RUN_RECAP=1" >> $GITHUB_ENV
+              exit 0
+            fi
+            if [ "$DOW" = "5" ]; then
+              echo "MODE=WEEKLY" >> $GITHUB_ENV
+              echo "SCHEDULE_AT_LOCAL=14:00" >> $GITHUB_ENV
+              echo "RUN_RECAP=1" >> $GITHUB_ENV
+              exit 0
+            fi
           fi
+
           echo "Not a recap slot — skipping."
 
       - name: Set MODE for manual runs
@@ -67,27 +82,26 @@ jobs:
       - name: Debug
         run: |
           echo "MODE=$MODE"
-          echo "CHANNEL_ID length: ${#CHANNEL_ID}"
+          echo "CHANNEL_ID (monitor) length: ${#CHANNEL_ID}"
+          echo "WEEKLY_POST_TO_CHANNEL_ID length: ${#WEEKLY_POST_TO_CHANNEL_ID}"
+          echo "MONTHLY_POST_TO_CHANNEL_ID length: ${#MONTHLY_POST_TO_CHANNEL_ID}"
           echo "Local time: $(TZ=America/Denver date -Is)"
           echo "UTC time:   $(date -u -Is)"
-          if [ -n "${{ inputs.post_to_channel_id }}" ]; then
-            echo "Manual override: will post to inputs.post_to_channel_id"
-          elif [ -n "$POST_TO_CHANNEL_ID" ]; then
-            echo "Will post to POST_TO_CHANNEL_ID secret"
-          else
-            echo "No override set: will post to CHANNEL_ID"
-          fi
         env:
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
-          POST_TO_CHANNEL_ID: ${{ secrets.POST_TO_CHANNEL_ID }}
+          WEEKLY_POST_TO_CHANNEL_ID: ${{ secrets.WEEKLY_POST_TO_CHANNEL_ID }}
+          MONTHLY_POST_TO_CHANNEL_ID: ${{ secrets.MONTHLY_POST_TO_CHANNEL_ID }}
 
       - name: Run recap bot
         if: ${{ github.event_name == 'workflow_dispatch' || env.RUN_RECAP == '1' }}
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
-          POST_TO_CHANNEL_ID: ${{ inputs.post_to_channel_id != '' && inputs.post_to_channel_id || secrets.POST_TO_CHANNEL_ID }}
+          WEEKLY_POST_TO_CHANNEL_ID: ${{ secrets.WEEKLY_POST_TO_CHANNEL_ID }}
+          MONTHLY_POST_TO_CHANNEL_ID: ${{ secrets.MONTHLY_POST_TO_CHANNEL_ID }}
           MODE: ${{ env.MODE }}
           TZ_NAME: America/Denver
           SCHEDULE_AT_LOCAL: ${{ env.SCHEDULE_AT_LOCAL }}
+          # Optional manual override for testing posts to a different channel
+          POST_TO_CHANNEL_ID: ${{ inputs.post_to_channel_id }}
         run: python recap_bot.py

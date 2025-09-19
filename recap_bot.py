@@ -2,25 +2,29 @@
 """
 Slack Typeform Recap Bot
 
-- DAILY  : Posts *yesterday's full day* Typeform message count (local 00:00–24:00)
-- WEEKLY : Posts a 7-day bar chart of Typeform counts (last 7 full local days, ending yesterday)
-- DRYRUN : Prints the same summaries to stdout (no Slack post)
+- DAILY   : Posts *yesterday's full day* Typeform message count (local 00:00–24:00)
+- WEEKLY  : Posts a 7-day bar chart of Typeform counts (last 7 full local days, ending yesterday)
+- MONTHLY : Posts a month-to-date count for the current calendar month (runs last day 14:00 local)
+- DRYRUN  : Prints summaries to stdout (no Slack post)
 
-Env vars (required):
-  SLACK_BOT_TOKEN      xoxb-...
-  CHANNEL_ID           Target channel to analyze (C... or G...)
+Notes
+- MONTHLY here is month-to-date as of the run (last day @ 14:00). If you later prefer a fully complete
+  prior month, run at 09:00 on the 1st and summarize the *previous* month.
 
-Optional:
-  POST_TO_CHANNEL_ID   Channel to post recaps to (defaults to CHANNEL_ID)
-  TZ_NAME              IANA tz (default: America/Denver)
-  TYPEFORM_APP_ID      If set, only count messages where bot_profile.app_id == this
-  SCHEDULE_AT_LOCAL    If set (e.g., "09:00" or "14:00"), schedule the Slack message
-                       for *today* at that local time using chat.scheduleMessage.
-                       If the target time has already passed, it posts immediately.
+Required env:
+  SLACK_BOT_TOKEN        xoxb-...
+  CHANNEL_ID             Monitor channel to analyze (C... or G...)  (daily posts here)
 
-Scopes needed (public channel): channels:read, channels:history, chat:write, users:read
+Optional env:
+  WEEKLY_POST_TO_CHANNEL_ID   Channel ID for weekly posts (e.g., cx-3-customization)
+  MONTHLY_POST_TO_CHANNEL_ID  Channel ID for monthly posts (defaults to weekly, else monitor)
+  TZ_NAME                IANA tz (default: America/Denver)
+  TYPEFORM_APP_ID        If set, only count messages where bot_profile.app_id == this
+  SCHEDULE_AT_LOCAL      If set (e.g., "09:00" or "14:00"), schedule the Slack message for *today*
+                         at that local time using chat.scheduleMessage; otherwise post immediately.
+
+Scopes needed (public channel): channels:read, channels:history, chat:write
 If the channel is private, also add: groups:read, groups:history
-Make sure the bot is invited to the channel you are analyzing/posting to.
 """
 
 import os
@@ -32,7 +36,7 @@ from zoneinfo import ZoneInfo
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-BOT_VERSION = "typeform-only v3 (scheduled delivery support)"
+BOT_VERSION = "typeform-only v5 (daily/weekly/monthly; per-channel posting; headers; scheduled delivery)"
 
 # ---------- Config / Globals ----------
 
@@ -40,9 +44,11 @@ TZ_NAME = os.environ.get("TZ_NAME", "America/Denver")
 TZ = ZoneInfo(TZ_NAME)
 
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
-CHANNEL_ID = os.environ["CHANNEL_ID"]
-# IMPORTANT: treat empty as unset; fall back to CHANNEL_ID
-POST_TO_CHANNEL_ID = os.environ.get("POST_TO_CHANNEL_ID") or CHANNEL_ID
+MONITOR_CHANNEL_ID = os.environ["CHANNEL_ID"]  # analyzed channel + where daily posts
+
+WEEKLY_POST_TO_CHANNEL_ID = os.environ.get("WEEKLY_POST_TO_CHANNEL_ID")
+MONTHLY_POST_TO_CHANNEL_ID = os.environ.get("MONTHLY_POST_TO_CHANNEL_ID") \
+    or WEEKLY_POST_TO_CHANNEL_ID or MONITOR_CHANNEL_ID
 
 # Optional hard match to Typeform app id (recommended if you know it)
 TYPEFORM_APP_ID = os.environ.get("TYPEFORM_APP_ID")
@@ -132,13 +138,32 @@ def _day_window_local(day: datetime):
     return _ts(start), _ts(end), start, end
 
 
+def _month_window_local_for(dt_any: datetime):
+    """
+    For any local datetime, return (start_ts, end_ts, start_dt) covering the *current* calendar month.
+    """
+    start = datetime(dt_any.year, dt_any.month, 1, 0, 0, 0, tzinfo=TZ)
+    if dt_any.month == 12:
+        next_month = datetime(dt_any.year + 1, 1, 1, 0, 0, 0, tzinfo=TZ)
+    else:
+        next_month = datetime(dt_any.year, dt_any.month + 1, 1, 0, 0, 0, tzinfo=TZ)
+    return _ts(start), _ts(next_month), start
+
+
 def _date_label(dt: datetime) -> str:
     # Example: "Sun Sep 14"
     try:
         return dt.strftime("%a %b %-d")
     except ValueError:
-        # Windows/Python formatting fallback (no %-d)
         return dt.strftime("%a %b %d").replace(" 0", " ")
+
+
+def _month_label(dt: datetime) -> str:
+    try:
+        return dt.strftime("%B")  # "September"
+    except ValueError:
+        return ["January","February","March","April","May","June","July","August",
+                "September","October","November","December"][dt.month-1]
 
 
 def _bar_chart(rows):
@@ -163,22 +188,21 @@ def _local_dt_today_at(hhmm: str) -> datetime:
     return datetime(now.year, now.month, now.day, h, m, 0, tzinfo=TZ)
 
 
-def _post_or_schedule(text: str, blocks: list, schedule_at_local: str | None):
+def _post_or_schedule(channel_to_post: str, text: str, blocks: list, schedule_at_local: str | None):
     """
     If schedule_at_local (HH:MM) is provided and still in the future today, schedule; else post now.
     """
     if schedule_at_local:
         target = _local_dt_today_at(schedule_at_local)
-        # Add a small buffer so we don't schedule for a time that's essentially "now"
         if target > datetime.now(TZ) + timedelta(seconds=15):
             client.chat_scheduleMessage(
-                channel=POST_TO_CHANNEL_ID,
+                channel=channel_to_post,
                 text=text,
                 blocks=blocks,
                 post_at=int(target.timestamp()),
             )
             return
-    client.chat_postMessage(channel=POST_TO_CHANNEL_ID, text=text, blocks=blocks)
+    client.chat_postMessage(channel=channel_to_post, text=text, blocks=blocks)
 
 
 # ---------- Summaries (Typeform only) ----------
@@ -192,7 +216,7 @@ def summarize_typeform_for_day(channel_id: str, day: datetime):
     for msg in _list_messages(channel_id, oldest, latest):
         if _is_typeform_message(msg):
             count += 1
-    return {"date_label": _date_label(start_dt), "total": count}
+    return {"date_label": _date_label(start_dt), "dow": start_dt.strftime("%A"), "total": count}
 
 
 def summarize_typeform_yesterday(channel_id: str):
@@ -213,47 +237,69 @@ def summarize_typeform_week(channel_id: str, end_day_inclusive: datetime):
     return days
 
 
+def summarize_typeform_month_to_now(channel_id: str, now_local: datetime):
+    """
+    Count Typeform messages for the current month up to 'now_local' (end exclusive).
+    """
+    oldest, _month_end_ts, month_start_dt = _month_window_local_for(now_local)
+    latest = _ts(now_local)
+    count = 0
+    for msg in _list_messages(channel_id, oldest, latest):
+        if _is_typeform_message(msg):
+            count += 1
+    return {"month": _month_label(month_start_dt), "total": count}
+
+
 # ---------- Posting ----------
 
-def post_daily_typeform_yesterday(channel_id: str):
-    s = summarize_typeform_yesterday(channel_id)
+def post_daily_typeform_yesterday():
+    s = summarize_typeform_yesterday(MONITOR_CHANNEL_ID)
+    header = f"Previous Day Recap ({s['dow']})"
     blocks = [
-        {"type": "header", "text": {"type": "plain_text",
-         "text": f"Daily Typeform recap – {s['date_label']} (full day)"}},
+        {"type": "header", "text": {"type": "plain_text", "text": header}},
         {"type": "section", "text": {"type": "mrkdwn",
          "text": f"*Typeform messages:* {s['total']}"}},
-        {"type": "context", "elements": [
-            {"type": "mrkdwn", "text": f"Channel: <#{channel_id}> • Counting only Typeform bot posts • Timezone: {TZ.key} • Target: {SCHEDULE_AT_LOCAL or 'now'}"}
-        ]},
     ]
-    _post_or_schedule("Daily Typeform recap", blocks, SCHEDULE_AT_LOCAL)
+    _post_or_schedule(MONITOR_CHANNEL_ID, "Daily Typeform recap", blocks, SCHEDULE_AT_LOCAL)
 
 
-def post_weekly_typeform(channel_id: str, now_local: datetime):
+def post_weekly_typeform(now_local: datetime):
     """
     Weekly: show the last 7 *full* days, ending yesterday.
-    Header reads "week ending <yesterday>".
     """
     yesterday = datetime(now_local.year, now_local.month, now_local.day, tzinfo=TZ) - timedelta(days=1)
-    week = summarize_typeform_week(channel_id, yesterday)
+    week = summarize_typeform_week(MONITOR_CHANNEL_ID, yesterday)
     rows = [(d["date_label"], d["total"]) for d in week]
     total = sum(v for _, v in rows)
     avg = round(total / len(rows), 2)
     chart = _bar_chart(rows)
-    end_label = _date_label(yesterday)
 
+    header = "Weekly Recap as of 2pm Friday"
     blocks = [
-        {"type": "header", "text": {"type": "plain_text",
-         "text": f"Weekly Typeform recap – week ending {end_label}"}},
+        {"type": "header", "text": {"type": "plain_text", "text": header}},
         {"type": "section", "text": {"type": "mrkdwn",
          "text": f"*Total Typeform messages:* {total}\n*Daily average:* {avg}"}},
     ]
     if chart:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": chart}})
-    blocks.append({"type": "context", "elements": [
-        {"type": "mrkdwn", "text": f"Channel: <#{channel_id}> • Counting only Typeform bot posts • Timezone: {TZ.key} • Target: {SCHEDULE_AT_LOCAL or 'now'}"}
-    ]})
-    _post_or_schedule("Weekly Typeform recap", blocks, SCHEDULE_AT_LOCAL)
+
+    post_channel = WEEKLY_POST_TO_CHANNEL_ID or MONITOR_CHANNEL_ID
+    _post_or_schedule(post_channel, "Weekly Typeform recap", blocks, SCHEDULE_AT_LOCAL)
+
+
+def post_monthly_typeform(now_local: datetime):
+    """
+    Monthly: month-to-date (as of run time).
+    """
+    m = summarize_typeform_month_to_now(MONITOR_CHANNEL_ID, now_local)
+    header = f"{m['month']} Monthly Recap"
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": header}},
+        {"type": "section", "text": {"type": "mrkdwn",
+         "text": f"*Typeform messages this month:* {m['total']}"}},
+    ]
+    post_channel = MONTHLY_POST_TO_CHANNEL_ID
+    _post_or_schedule(post_channel, "Monthly Typeform recap", blocks, SCHEDULE_AT_LOCAL)
 
 
 # ---------- Main ----------
@@ -262,20 +308,24 @@ def main():
     print(f"[recap_bot] starting {BOT_VERSION}")
     mode = os.environ.get("MODE", "DAILY").upper()
 
-    if not CHANNEL_ID or not (CHANNEL_ID.startswith("C") or CHANNEL_ID.startswith("G")):
+    if not MONITOR_CHANNEL_ID or not (MONITOR_CHANNEL_ID.startswith("C") or MONITOR_CHANNEL_ID.startswith("G")):
         print("WARNING: CHANNEL_ID is missing or not a channel ID (should start with C or G)")
 
     now_local = datetime.now(TZ)
 
     if mode == "DAILY":
-        post_daily_typeform_yesterday(CHANNEL_ID)
+        post_daily_typeform_yesterday()
     elif mode == "WEEKLY":
-        post_weekly_typeform(CHANNEL_ID, now_local)
+        post_weekly_typeform(now_local)
+    elif mode == "MONTHLY":
+        post_monthly_typeform(now_local)
     elif mode == "DRYRUN":
-        today = summarize_typeform_for_day(CHANNEL_ID, now_local)  # useful for quick checks
-        print({"today_full": today})
-        ysum = summarize_typeform_yesterday(CHANNEL_ID)
+        ysum = summarize_typeform_yesterday(MONITOR_CHANNEL_ID)
         print({"yesterday_full": ysum})
+        week = summarize_typeform_week(MONITOR_CHANNEL_ID, datetime(now_local.year, now_local.month, now_local.day, tzinfo=TZ) - timedelta(days=1))
+        print({"last_7_days": [(d['date_label'], d['total']) for d in week]})
+        msum = summarize_typeform_month_to_now(MONITOR_CHANNEL_ID, now_local)
+        print({"month_to_now": msum})
     else:
         raise SystemExit(f"Unknown MODE: {mode}")
 
