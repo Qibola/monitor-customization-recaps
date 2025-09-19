@@ -14,6 +14,9 @@ Optional:
   POST_TO_CHANNEL_ID   Channel to post recaps to (defaults to CHANNEL_ID)
   TZ_NAME              IANA tz (default: America/Denver)
   TYPEFORM_APP_ID      If set, only count messages where bot_profile.app_id == this
+  SCHEDULE_AT_LOCAL    If set (e.g., "09:00" or "14:00"), schedule the Slack message
+                       for *today* at that local time using chat.scheduleMessage.
+                       If the target time has already passed, it posts immediately.
 
 Scopes needed (public channel): channels:read, channels:history, chat:write, users:read
 If the channel is private, also add: groups:read, groups:history
@@ -29,7 +32,7 @@ from zoneinfo import ZoneInfo
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-BOT_VERSION = "typeform-only v2 (daily=yesterday, weekly=week ending)"
+BOT_VERSION = "typeform-only v3 (scheduled delivery support)"
 
 # ---------- Config / Globals ----------
 
@@ -43,6 +46,9 @@ POST_TO_CHANNEL_ID = os.environ.get("POST_TO_CHANNEL_ID") or CHANNEL_ID
 
 # Optional hard match to Typeform app id (recommended if you know it)
 TYPEFORM_APP_ID = os.environ.get("TYPEFORM_APP_ID")
+
+# If provided (e.g., "09:00" or "14:00"), we'll *schedule* the message for today at that local time
+SCHEDULE_AT_LOCAL = os.environ.get("SCHEDULE_AT_LOCAL")
 
 client = WebClient(token=SLACK_BOT_TOKEN)
 
@@ -150,6 +156,31 @@ def _bar_chart(rows):
     return "```\n" + "\n".join(lines) + "\n```"
 
 
+def _local_dt_today_at(hhmm: str) -> datetime:
+    """Return today's local DateTime at HH:MM."""
+    h, m = map(int, hhmm.split(":"))
+    now = datetime.now(TZ)
+    return datetime(now.year, now.month, now.day, h, m, 0, tzinfo=TZ)
+
+
+def _post_or_schedule(text: str, blocks: list, schedule_at_local: str | None):
+    """
+    If schedule_at_local (HH:MM) is provided and still in the future today, schedule; else post now.
+    """
+    if schedule_at_local:
+        target = _local_dt_today_at(schedule_at_local)
+        # Add a small buffer so we don't schedule for a time that's essentially "now"
+        if target > datetime.now(TZ) + timedelta(seconds=15):
+            client.chat_scheduleMessage(
+                channel=POST_TO_CHANNEL_ID,
+                text=text,
+                blocks=blocks,
+                post_at=int(target.timestamp()),
+            )
+            return
+    client.chat_postMessage(channel=POST_TO_CHANNEL_ID, text=text, blocks=blocks)
+
+
 # ---------- Summaries (Typeform only) ----------
 
 def summarize_typeform_for_day(channel_id: str, day: datetime):
@@ -192,10 +223,10 @@ def post_daily_typeform_yesterday(channel_id: str):
         {"type": "section", "text": {"type": "mrkdwn",
          "text": f"*Typeform messages:* {s['total']}"}},
         {"type": "context", "elements": [
-            {"type": "mrkdwn", "text": f"Channel: <#{channel_id}> • Counting only Typeform bot posts • Timezone: {TZ.key}"}
+            {"type": "mrkdwn", "text": f"Channel: <#{channel_id}> • Counting only Typeform bot posts • Timezone: {TZ.key} • Target: {SCHEDULE_AT_LOCAL or 'now'}"}
         ]},
     ]
-    client.chat_postMessage(channel=POST_TO_CHANNEL_ID, text="Daily Typeform recap", blocks=blocks)
+    _post_or_schedule("Daily Typeform recap", blocks, SCHEDULE_AT_LOCAL)
 
 
 def post_weekly_typeform(channel_id: str, now_local: datetime):
@@ -220,9 +251,9 @@ def post_weekly_typeform(channel_id: str, now_local: datetime):
     if chart:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": chart}})
     blocks.append({"type": "context", "elements": [
-        {"type": "mrkdwn", "text": f"Channel: <#{channel_id}> • Counting only Typeform bot posts • Timezone: {TZ.key}"}
+        {"type": "mrkdwn", "text": f"Channel: <#{channel_id}> • Counting only Typeform bot posts • Timezone: {TZ.key} • Target: {SCHEDULE_AT_LOCAL or 'now'}"}
     ]})
-    client.chat_postMessage(channel=POST_TO_CHANNEL_ID, text="Weekly Typeform recap", blocks=blocks)
+    _post_or_schedule("Weekly Typeform recap", blocks, SCHEDULE_AT_LOCAL)
 
 
 # ---------- Main ----------

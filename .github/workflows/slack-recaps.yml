@@ -13,12 +13,12 @@ on:
         required: false
         type: string
   schedule:
-    # 9:00 AM America/Denver (MDT/MST) for DAILY (yesterday)
-    - cron: "0 15 * * *"   # 9am during MDT (UTC-6)
-    - cron: "0 16 * * *"   # 9am during MST (UTC-7)
-    # 2:00 PM America/Denver (MDT/MST) for WEEKLY (Fridays)
-    - cron: "0 20 * * 5"   # 2pm Friday during MDT (UTC-6)
-    - cron: "0 21 * * 5"   # 2pm Friday during MST (UTC-7)
+    # DAILY: run at 08:30 America/Denver to schedule delivery for 09:00
+    - cron: "30 14 * * *"   # 08:30 during MDT (UTC-6)
+    - cron: "30 15 * * *"   # 08:30 during MST (UTC-7)
+    # WEEKLY (Friday): run at 13:30 America/Denver to schedule delivery for 14:00
+    - cron: "30 19 * * 5"   # 13:30 Fri during MDT
+    - cron: "30 20 * * 5"   # 13:30 Fri during MST
 
 concurrency:
   group: slack-recaps
@@ -39,26 +39,26 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      # Decide whether to run and which MODE, based on local time/day.
-      - name: Decide MODE & gate by local time
+      # Decide whether to run and what MODE + target delivery time to use.
+      - name: Decide MODE & set schedule target
         if: ${{ github.event_name == 'schedule' }}
         run: |
-          LOCAL_HOUR=$(TZ=America/Denver date +%H)
-          DOW=$(TZ=America/Denver date +%u)   # 1=Mon ... 5=Fri ... 7=Sun
-          echo "Local hour: $LOCAL_HOUR  DOW: $DOW"
-          # 9am local → DAILY (yesterday)
-          if [ "$LOCAL_HOUR" = "09" ]; then
+          H=$(TZ=America/Denver date +%H)
+          DOW=$(TZ=America/Denver date +%u)  # 5=Fri
+          echo "Local hour: $H  DOW: $DOW"
+          if [ "$H" = "08" ]; then
             echo "MODE=DAILY" >> $GITHUB_ENV
+            echo "SCHEDULE_AT_LOCAL=09:00" >> $GITHUB_ENV
             echo "RUN_RECAP=1" >> $GITHUB_ENV
             exit 0
           fi
-          # 2pm Friday local → WEEKLY
-          if [ "$LOCAL_HOUR" = "14" ] && [ "$DOW" = "5" ]; then
+          if [ "$H" = "13" ] && [ "$DOW" = "5" ]; then
             echo "MODE=WEEKLY" >> $GITHUB_ENV
+            echo "SCHEDULE_AT_LOCAL=14:00" >> $GITHUB_ENV
             echo "RUN_RECAP=1" >> $GITHUB_ENV
             exit 0
           fi
-          echo "Not a scheduled recap slot — skipping."
+          echo "Not a recap slot — skipping."
 
       - name: Set MODE for manual runs
         if: ${{ github.event_name == 'workflow_dispatch' }}
@@ -89,4 +89,5 @@ jobs:
           POST_TO_CHANNEL_ID: ${{ inputs.post_to_channel_id != '' && inputs.post_to_channel_id || secrets.POST_TO_CHANNEL_ID }}
           MODE: ${{ env.MODE }}
           TZ_NAME: America/Denver
+          SCHEDULE_AT_LOCAL: ${{ env.SCHEDULE_AT_LOCAL }}
         run: python recap_bot.py
