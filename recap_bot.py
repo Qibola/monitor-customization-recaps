@@ -258,7 +258,7 @@ def post_daily_typeform_yesterday():
     blocks = [
         {"type": "header", "text": {"type": "plain_text", "text": header}},
         {"type": "section", "text": {"type": "mrkdwn",
-         "text": f"*Typeform messages:* {s['total']}"}},
+         "text": f"*Customization requests:* {s['total']}"}},
     ]
     _post_or_schedule(MONITOR_CHANNEL_ID, "Daily Typeform recap", blocks, SCHEDULE_AT_LOCAL)
 
@@ -278,7 +278,7 @@ def post_weekly_typeform(now_local: datetime):
     blocks = [
         {"type": "header", "text": {"type": "plain_text", "text": header}},
         {"type": "section", "text": {"type": "mrkdwn",
-         "text": f"*Total Typeform messages:* {total}\n*Daily average:* {avg}"}},
+         "text": f"*Customization requests this week:* {total}\n*Daily average:* {avg}"}},
     ]
     if chart:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": chart}})
@@ -296,7 +296,7 @@ def post_monthly_typeform(now_local: datetime):
     blocks = [
         {"type": "header", "text": {"type": "plain_text", "text": header}},
         {"type": "section", "text": {"type": "mrkdwn",
-         "text": f"*Typeform messages this month:* {m['total']}"}},
+         "text": f"*Customization requests this month:* {m['total']}"}},
     ]
     post_channel = MONTHLY_POST_TO_CHANNEL_ID
     _post_or_schedule(post_channel, "Monthly Typeform recap", blocks, SCHEDULE_AT_LOCAL)
