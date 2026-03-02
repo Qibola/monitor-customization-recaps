@@ -1,4 +1,4 @@
-# Customization Recap Bot 🤖
+# Customization Recap Bot
 
 ## What is this?
 
