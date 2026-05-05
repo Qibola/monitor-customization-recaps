@@ -167,4 +167,4 @@ Current version: **typeform-only v5** (daily/weekly/monthly; per-channel posting
 
 ## Questions?
 
-If you need help or have questions, check the code comments in `recap_bot.py` or review the GitHub Actions workflow file.
+If you need help or have questions, check the code comments in `recap_bot.py` or review the GitHub Actions workflow file.    
