@@ -24,6 +24,9 @@ concurrency:
   group: slack-recaps
   cancel-in-progress: false
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # fix the break
+
 jobs:
   recap:
     runs-on: ubuntu-latest
