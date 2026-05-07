@@ -188,22 +188,24 @@ def _local_dt_today_at(hhmm: str) -> datetime:
     return datetime(now.year, now.month, now.day, h, m, 0, tzinfo=TZ)
 
 
-def _post_or_schedule(channel_to_post: str, text: str, blocks: list, schedule_at_local: str | None):
-    """
-    If schedule_at_local (HH:MM) is provided and still in the future today, schedule; else post now.
-    """
-    if schedule_at_local:
-        target = _local_dt_today_at(schedule_at_local)
-        if target > datetime.now(TZ) + timedelta(seconds=15):
-            client.chat_scheduleMessage(
-                channel=channel_to_post,
-                text=text,
-                blocks=blocks,
-                post_at=int(target.timestamp()),
-            )
-            return
-    client.chat_postMessage(channel=channel_to_post, text=text, blocks=blocks)
-
+def _post_or_schedule(channel_to_post, text, blocks, schedule_at_local):
+    try:
+        if schedule_at_local:
+            target = _local_dt_today_at(schedule_at_local)
+            if target > datetime.now(TZ) + timedelta(seconds=15):
+                resp = client.chat_scheduleMessage(
+                    channel=channel_to_post,
+                    text=text,
+                    blocks=blocks,
+                    post_at=int(target.timestamp()),
+                )
+                print(f"[recap_bot] Scheduled for {target} → post_message_id={resp.get('scheduled_message_id')}")
+                return
+        resp = client.chat_postMessage(channel=channel_to_post, text=text, blocks=blocks)
+        print(f"[recap_bot] Posted → ts={resp.get('ts')}, channel={resp.get('channel')}")
+    except SlackApiError as e:
+        print(f"[recap_bot] SlackApiError: {e.response['error']} — channel={channel_to_post}")
+        raise
 
 # ---------- Summaries (Typeform only) ----------
 
