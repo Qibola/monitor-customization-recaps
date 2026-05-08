@@ -52,16 +52,16 @@ jobs:
           TOMORROW_DAY=$(TZ=America/Denver date -d 'tomorrow' +%d)
           echo "Local hour: $H  DOW: $DOW  Tomorrow day: $TOMORROW_DAY"
 
-          # 08:30 local → DAILY for 09:00
-          if [ "$H" = "08" ]; then
+          # 08:30 local → DAILY (accept hours 08-10 to handle GitHub delay)
+          if [ "$H" -ge 8 ] && [ "$H" -le 10 ]; then
             echo "MODE=DAILY" >> $GITHUB_ENV
-            echo "SCHEDULE_AT_LOCAL=09:00" >> $GITHUB_ENV
+            echo "SCHEDULE_AT_LOCAL=" >> $GITHUB_ENV
             echo "RUN_RECAP=1" >> $GITHUB_ENV
             exit 0
           fi
-
-          # 13:30 local → Monthly if last day, else Weekly on Fridays (14:00)
-          if [ "$H" = "13" ]; then
+          
+          # 13:30 local → Monthly if last day, else Weekly on Fridays
+          if [ "$H" -ge 13 ] && [ "$H" -le 15 ]; then
             if [ "$TOMORROW_DAY" = "01" ]; then
               echo "MODE=MONTHLY" >> $GITHUB_ENV
               echo "SCHEDULE_AT_LOCAL=14:00" >> $GITHUB_ENV
