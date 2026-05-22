@@ -18,6 +18,8 @@ Required env:
 Optional env:
   WEEKLY_POST_TO_CHANNEL_ID   Channel ID for weekly posts (e.g., cx-3-customization)
   MONTHLY_POST_TO_CHANNEL_ID  Channel ID for monthly posts (defaults to weekly, else monitor)
+  POST_TO_CHANNEL_ID          Manual/testing override for where to post recaps
+                              (does NOT change which channel is analyzed)
   TZ_NAME                IANA tz (default: America/Denver)
   TYPEFORM_APP_ID        If set, only count messages where bot_profile.app_id == this
   SCHEDULE_AT_LOCAL      If set (e.g., "09:00" or "14:00"), schedule the Slack message for *today*
@@ -44,11 +46,15 @@ TZ_NAME = os.environ.get("TZ_NAME", "America/Denver")
 TZ = ZoneInfo(TZ_NAME)
 
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
-MONITOR_CHANNEL_ID = os.environ["CHANNEL_ID"]  # analyzed channel + where daily posts
+MONITOR_CHANNEL_ID = os.environ["CHANNEL_ID"]  # analyzed channel + default daily post channel
 
 WEEKLY_POST_TO_CHANNEL_ID = os.environ.get("WEEKLY_POST_TO_CHANNEL_ID")
 MONTHLY_POST_TO_CHANNEL_ID = os.environ.get("MONTHLY_POST_TO_CHANNEL_ID") \
     or WEEKLY_POST_TO_CHANNEL_ID or MONITOR_CHANNEL_ID
+
+# Optional manual/testing override for where recaps post.
+# This does NOT change which channel we analyze; it only changes where the recap is posted.
+POST_TO_CHANNEL_ID = os.environ.get("POST_TO_CHANNEL_ID")
 
 # Optional hard match to Typeform app id (recommended if you know it)
 TYPEFORM_APP_ID = os.environ.get("TYPEFORM_APP_ID")
@@ -207,6 +213,7 @@ def _post_or_schedule(channel_to_post, text, blocks, schedule_at_local):
         print(f"[recap_bot] SlackApiError: {e.response['error']} — channel={channel_to_post}")
         raise
 
+
 # ---------- Summaries (Typeform only) ----------
 
 def summarize_typeform_for_day(channel_id: str, day: datetime):
@@ -262,7 +269,8 @@ def post_daily_typeform_yesterday():
         {"type": "section", "text": {"type": "mrkdwn",
          "text": f"*Customization requests:* {s['total']}"}},
     ]
-    _post_or_schedule(MONITOR_CHANNEL_ID, "Daily Typeform recap", blocks, SCHEDULE_AT_LOCAL)
+    post_channel = POST_TO_CHANNEL_ID or MONITOR_CHANNEL_ID
+    _post_or_schedule(post_channel, "Daily Typeform recap", blocks, SCHEDULE_AT_LOCAL)
 
 
 def post_weekly_typeform(now_local: datetime):
@@ -285,7 +293,7 @@ def post_weekly_typeform(now_local: datetime):
     if chart:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": chart}})
 
-    post_channel = WEEKLY_POST_TO_CHANNEL_ID or MONITOR_CHANNEL_ID
+    post_channel = POST_TO_CHANNEL_ID or WEEKLY_POST_TO_CHANNEL_ID or MONITOR_CHANNEL_ID
     _post_or_schedule(post_channel, "Weekly Typeform recap", blocks, SCHEDULE_AT_LOCAL)
 
 
@@ -300,7 +308,7 @@ def post_monthly_typeform(now_local: datetime):
         {"type": "section", "text": {"type": "mrkdwn",
          "text": f"*Customization requests via form this month:* {m['total']}"}},
     ]
-    post_channel = MONTHLY_POST_TO_CHANNEL_ID
+    post_channel = POST_TO_CHANNEL_ID or MONTHLY_POST_TO_CHANNEL_ID
     _post_or_schedule(post_channel, "Monthly Typeform recap", blocks, SCHEDULE_AT_LOCAL)
 
 
@@ -312,6 +320,9 @@ def main():
 
     if not MONITOR_CHANNEL_ID or not (MONITOR_CHANNEL_ID.startswith("C") or MONITOR_CHANNEL_ID.startswith("G")):
         print("WARNING: CHANNEL_ID is missing or not a channel ID (should start with C or G)")
+
+    if POST_TO_CHANNEL_ID:
+        print(f"[recap_bot] POST_TO_CHANNEL_ID override active: {POST_TO_CHANNEL_ID}")
 
     now_local = datetime.now(TZ)
 
