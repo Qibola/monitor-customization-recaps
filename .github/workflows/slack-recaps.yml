@@ -12,11 +12,15 @@ on:
         description: "Override channel ID to post into (e.g., C0123ABCDEF) — optional"
         required: false
         type: string
+
   schedule:
-    # DAILY: run at 08:30 America/Denver to schedule delivery for 09:00
+    # DAILY prep slot: run at 08:30 America/Denver to schedule delivery for 09:00
+    # We keep both UTC options for DST, then gate by actual local hour in the job.
     - cron: "30 14 * * *"   # 08:30 during MDT (UTC-6)
     - cron: "30 15 * * *"   # 08:30 during MST (UTC-7)
-    # WEEKLY/MONTHLY check slot: 13:30 America/Denver (we'll gate to Fri for weekly, last day for monthly)
+
+    # WEEKLY/MONTHLY prep slot: run at 13:30 America/Denver to schedule delivery for 14:00
+    # We keep both UTC options for DST, then gate by actual local hour in the job.
     - cron: "30 19 * * *"   # 13:30 during MDT
     - cron: "30 20 * * *"   # 13:30 during MST
 
@@ -25,7 +29,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # fix the break
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   recap:
@@ -48,26 +52,33 @@ jobs:
         run: |
           H=$(TZ=America/Denver date +%H)
           DOW=$(TZ=America/Denver date +%u)  # 5=Fri
-          # Tomorrow day-of-month; "01" means today is the last day of the month
           TOMORROW_DAY=$(TZ=America/Denver date -d 'tomorrow' +%d)
+
           echo "Local hour: $H  DOW: $DOW  Tomorrow day: $TOMORROW_DAY"
 
-          # 08:30 local → DAILY (accept hours 08-10 to handle GitHub delay)
-          if [ "$H" -ge 8 ] && [ "$H" -le 10 ]; then
+          # DAILY prep slot:
+          # Only accept the cron that lands at 08:30 local.
+          # This avoids the duplicate 09:30 local run during MDT.
+          if [ "$H" = "08" ]; then
             echo "MODE=DAILY" >> $GITHUB_ENV
-            echo "SCHEDULE_AT_LOCAL=" >> $GITHUB_ENV
+            echo "SCHEDULE_AT_LOCAL=09:00" >> $GITHUB_ENV
             echo "RUN_RECAP=1" >> $GITHUB_ENV
             exit 0
           fi
-          
-          # 13:30 local → Monthly if last day, else Weekly on Fridays
-          if [ "$H" -ge 13 ] && [ "$H" -le 15 ]; then
+
+          # WEEKLY / MONTHLY prep slot:
+          # Only accept the cron that lands at 13:30 local.
+          # This avoids the duplicate 14:30 local run during MDT.
+          if [ "$H" = "13" ]; then
+            # Monthly wins if today is the last day of the month.
             if [ "$TOMORROW_DAY" = "01" ]; then
               echo "MODE=MONTHLY" >> $GITHUB_ENV
               echo "SCHEDULE_AT_LOCAL=14:00" >> $GITHUB_ENV
               echo "RUN_RECAP=1" >> $GITHUB_ENV
               exit 0
             fi
+
+            # Weekly on Fridays.
             if [ "$DOW" = "5" ]; then
               echo "MODE=WEEKLY" >> $GITHUB_ENV
               echo "SCHEDULE_AT_LOCAL=14:00" >> $GITHUB_ENV
@@ -80,11 +91,15 @@ jobs:
 
       - name: Set MODE for manual runs
         if: ${{ github.event_name == 'workflow_dispatch' }}
-        run: echo "MODE=${{ inputs.mode }}" >> $GITHUB_ENV
+        run: |
+          echo "MODE=${{ inputs.mode }}" >> $GITHUB_ENV
+          echo "SCHEDULE_AT_LOCAL=" >> $GITHUB_ENV
 
       - name: Debug
         run: |
           echo "MODE=$MODE"
+          echo "RUN_RECAP=$RUN_RECAP"
+          echo "SCHEDULE_AT_LOCAL=$SCHEDULE_AT_LOCAL"
           echo "CHANNEL_ID (monitor) length: ${#CHANNEL_ID}"
           echo "WEEKLY_POST_TO_CHANNEL_ID length: ${#WEEKLY_POST_TO_CHANNEL_ID}"
           echo "MONTHLY_POST_TO_CHANNEL_ID length: ${#MONTHLY_POST_TO_CHANNEL_ID}"
@@ -105,6 +120,5 @@ jobs:
           MODE: ${{ env.MODE }}
           TZ_NAME: America/Denver
           SCHEDULE_AT_LOCAL: ${{ env.SCHEDULE_AT_LOCAL }}
-          # Optional manual override for testing posts to a different channel
           POST_TO_CHANNEL_ID: ${{ inputs.post_to_channel_id }}
         run: python recap_bot.py
