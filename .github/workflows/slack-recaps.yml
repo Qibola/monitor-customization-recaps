@@ -14,13 +14,13 @@ on:
         type: string
 
   schedule:
-    # DAILY prep slot: run at 08:30 America/Denver to schedule delivery for 09:00
-    # We keep both UTC options for DST, then gate by actual local hour in the job.
+    # DAILY prep slot: run at 08:30 America/Denver to schedule delivery for 09:00.
+    # We keep both UTC options for DST, then choose the correct one based on current Denver offset.
     - cron: "30 14 * * *"   # 08:30 during MDT (UTC-6)
     - cron: "30 15 * * *"   # 08:30 during MST (UTC-7)
 
-    # WEEKLY/MONTHLY prep slot: run at 13:30 America/Denver to schedule delivery for 14:00
-    # We keep both UTC options for DST, then gate by actual local hour in the job.
+    # WEEKLY/MONTHLY prep slot: run at 13:30 America/Denver to schedule delivery for 14:00.
+    # We keep both UTC options for DST, then choose the correct one based on current Denver offset.
     - cron: "30 19 * * *"   # 13:30 during MDT
     - cron: "30 20 * * *"   # 13:30 during MST
 
@@ -46,60 +46,59 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      # Decide whether to run and which MODE + target delivery time to use.
-      - name: Decide MODE & set schedule target
+      - name: Decide scheduled run flags
         if: ${{ github.event_name == 'schedule' }}
         run: |
-          H=$(TZ=America/Denver date +%H)
+          EVENT_SCHEDULE="${{ github.event.schedule }}"
+          OFFSET=$(TZ=America/Denver date +%z)
           DOW=$(TZ=America/Denver date +%u)  # 5=Fri
           TOMORROW_DAY=$(TZ=America/Denver date -d 'tomorrow' +%d)
 
-          echo "Local hour: $H  DOW: $DOW  Tomorrow day: $TOMORROW_DAY"
+          echo "Event schedule: $EVENT_SCHEDULE"
+          echo "Denver offset: $OFFSET"
+          echo "DOW: $DOW"
+          echo "Tomorrow day: $TOMORROW_DAY"
+          echo "Local time: $(TZ=America/Denver date -Is)"
+          echo "UTC time:   $(date -u -Is)"
 
-          # DAILY prep slot:
-          # Only accept the cron that lands at 08:30 local.
-          # This avoids the duplicate 09:30 local run during MDT.
-          if [ "$H" = "08" ]; then
-            echo "MODE=DAILY" >> $GITHUB_ENV
-            echo "SCHEDULE_AT_LOCAL=09:00" >> $GITHUB_ENV
-            echo "RUN_RECAP=1" >> $GITHUB_ENV
-            exit 0
+          if [ "$OFFSET" = "-0600" ]; then
+            EXPECTED_DAILY_CRON="30 14 * * *"
+            EXPECTED_PM_CRON="30 19 * * *"
+          else
+            EXPECTED_DAILY_CRON="30 15 * * *"
+            EXPECTED_PM_CRON="30 20 * * *"
           fi
 
-          # WEEKLY / MONTHLY prep slot:
-          # Only accept the cron that lands at 13:30 local.
-          # This avoids the duplicate 14:30 local run during MDT.
-          if [ "$H" = "13" ]; then
-            # Monthly wins if today is the last day of the month.
-            if [ "$TOMORROW_DAY" = "01" ]; then
-              echo "MODE=MONTHLY" >> $GITHUB_ENV
-              echo "SCHEDULE_AT_LOCAL=14:00" >> $GITHUB_ENV
-              echo "RUN_RECAP=1" >> $GITHUB_ENV
-              exit 0
-            fi
+          echo "Expected daily cron: $EXPECTED_DAILY_CRON"
+          echo "Expected PM cron: $EXPECTED_PM_CRON"
 
-            # Weekly on Fridays.
+          # Daily: run once per day from the correct DST-aware cron.
+          if [ "$EVENT_SCHEDULE" = "$EXPECTED_DAILY_CRON" ]; then
+            echo "RUN_DAILY=1" >> $GITHUB_ENV
+            echo "DAILY_SCHEDULE_AT_LOCAL=09:00" >> $GITHUB_ENV
+          fi
+
+          # Weekly/monthly: run from the correct DST-aware PM cron.
+          if [ "$EVENT_SCHEDULE" = "$EXPECTED_PM_CRON" ]; then
             if [ "$DOW" = "5" ]; then
-              echo "MODE=WEEKLY" >> $GITHUB_ENV
-              echo "SCHEDULE_AT_LOCAL=14:00" >> $GITHUB_ENV
-              echo "RUN_RECAP=1" >> $GITHUB_ENV
-              exit 0
+              echo "RUN_WEEKLY=1" >> $GITHUB_ENV
+              echo "WEEKLY_SCHEDULE_AT_LOCAL=14:00" >> $GITHUB_ENV
+            fi
+
+            if [ "$TOMORROW_DAY" = "01" ]; then
+              echo "RUN_MONTHLY=1" >> $GITHUB_ENV
+              echo "MONTHLY_SCHEDULE_AT_LOCAL=14:00" >> $GITHUB_ENV
             fi
           fi
-
-          echo "Not a recap slot — skipping."
-
-      - name: Set MODE for manual runs
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        run: |
-          echo "MODE=${{ inputs.mode }}" >> $GITHUB_ENV
-          echo "SCHEDULE_AT_LOCAL=" >> $GITHUB_ENV
 
       - name: Debug
         run: |
-          echo "MODE=$MODE"
-          echo "RUN_RECAP=$RUN_RECAP"
-          echo "SCHEDULE_AT_LOCAL=$SCHEDULE_AT_LOCAL"
+          echo "RUN_DAILY=$RUN_DAILY"
+          echo "RUN_WEEKLY=$RUN_WEEKLY"
+          echo "RUN_MONTHLY=$RUN_MONTHLY"
+          echo "DAILY_SCHEDULE_AT_LOCAL=$DAILY_SCHEDULE_AT_LOCAL"
+          echo "WEEKLY_SCHEDULE_AT_LOCAL=$WEEKLY_SCHEDULE_AT_LOCAL"
+          echo "MONTHLY_SCHEDULE_AT_LOCAL=$MONTHLY_SCHEDULE_AT_LOCAL"
           echo "CHANNEL_ID (monitor) length: ${#CHANNEL_ID}"
           echo "WEEKLY_POST_TO_CHANNEL_ID length: ${#WEEKLY_POST_TO_CHANNEL_ID}"
           echo "MONTHLY_POST_TO_CHANNEL_ID length: ${#MONTHLY_POST_TO_CHANNEL_ID}"
@@ -110,15 +109,54 @@ jobs:
           WEEKLY_POST_TO_CHANNEL_ID: ${{ secrets.WEEKLY_POST_TO_CHANNEL_ID }}
           MONTHLY_POST_TO_CHANNEL_ID: ${{ secrets.MONTHLY_POST_TO_CHANNEL_ID }}
 
-      - name: Run recap bot
-        if: ${{ github.event_name == 'workflow_dispatch' || env.RUN_RECAP == '1' }}
+      - name: Manual run
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           WEEKLY_POST_TO_CHANNEL_ID: ${{ secrets.WEEKLY_POST_TO_CHANNEL_ID }}
           MONTHLY_POST_TO_CHANNEL_ID: ${{ secrets.MONTHLY_POST_TO_CHANNEL_ID }}
-          MODE: ${{ env.MODE }}
+          MODE: ${{ inputs.mode }}
           TZ_NAME: America/Denver
-          SCHEDULE_AT_LOCAL: ${{ env.SCHEDULE_AT_LOCAL }}
+          SCHEDULE_AT_LOCAL:
           POST_TO_CHANNEL_ID: ${{ inputs.post_to_channel_id }}
+        run: python recap_bot.py
+
+      - name: Scheduled daily recap
+        if: ${{ github.event_name == 'schedule' && env.RUN_DAILY == '1' }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          WEEKLY_POST_TO_CHANNEL_ID: ${{ secrets.WEEKLY_POST_TO_CHANNEL_ID }}
+          MONTHLY_POST_TO_CHANNEL_ID: ${{ secrets.MONTHLY_POST_TO_CHANNEL_ID }}
+          MODE: DAILY
+          TZ_NAME: America/Denver
+          SCHEDULE_AT_LOCAL: ${{ env.DAILY_SCHEDULE_AT_LOCAL }}
+          POST_TO_CHANNEL_ID:
+        run: python recap_bot.py
+
+      - name: Scheduled weekly recap
+        if: ${{ github.event_name == 'schedule' && env.RUN_WEEKLY == '1' }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          WEEKLY_POST_TO_CHANNEL_ID: ${{ secrets.WEEKLY_POST_TO_CHANNEL_ID }}
+          MONTHLY_POST_TO_CHANNEL_ID: ${{ secrets.MONTHLY_POST_TO_CHANNEL_ID }}
+          MODE: WEEKLY
+          TZ_NAME: America/Denver
+          SCHEDULE_AT_LOCAL: ${{ env.WEEKLY_SCHEDULE_AT_LOCAL }}
+          POST_TO_CHANNEL_ID:
+        run: python recap_bot.py
+
+      - name: Scheduled monthly recap
+        if: ${{ github.event_name == 'schedule' && env.RUN_MONTHLY == '1' }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          WEEKLY_POST_TO_CHANNEL_ID: ${{ secrets.WEEKLY_POST_TO_CHANNEL_ID }}
+          MONTHLY_POST_TO_CHANNEL_ID: ${{ secrets.MONTHLY_POST_TO_CHANNEL_ID }}
+          MODE: MONTHLY
+          TZ_NAME: America/Denver
+          SCHEDULE_AT_LOCAL: ${{ env.MONTHLY_SCHEDULE_AT_LOCAL }}
+          POST_TO_CHANNEL_ID:
         run: python recap_bot.py
