@@ -6,7 +6,7 @@ This is a friendly robot that watches a Slack channel and counts how many custom
 
 ---
 
-## How it works (Simple Version)
+## How it works (Simple Version) 
 
 ### The Daily Recap
 Every morning at **9:00 AM** (Denver time), the bot posts a message that says:
