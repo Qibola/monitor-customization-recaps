@@ -9,20 +9,19 @@ on:
         options: [DRYRUN, DAILY, WEEKLY, MONTHLY]
         default: DRYRUN
       post_to_channel_id:
-        description: "Override channel ID to post into (e.g., C0123ABCDEF) — optional"
+        description: "Override channel ID to post into (e.g., C0123ABCDEF), optional"
         required: false
         type: string
 
   schedule:
     # DAILY prep slot: run at 08:30 America/Denver to schedule delivery for 09:00.
-    # We keep both UTC options for DST, then choose the correct one based on current Denver offset.
-    - cron: "30 14 * * *"   # 08:30 during MDT (UTC-6)
-    - cron: "30 15 * * *"   # 08:30 during MST (UTC-7)
+    # Both UTC options are listed for DST; the job keeps only the one matching the current Denver offset.
+    - cron: "30 14 * * *" # 08:30 during MDT (UTC-6)
+    - cron: "30 15 * * *" # 08:30 during MST (UTC-7)
 
     # WEEKLY/MONTHLY prep slot: run at 13:30 America/Denver to schedule delivery for 14:00.
-    # We keep both UTC options for DST, then choose the correct one based on current Denver offset.
-    - cron: "30 19 * * *"   # 13:30 during MDT
-    - cron: "30 20 * * *"   # 13:30 during MST
+    - cron: "30 19 * * *" # 13:30 during MDT
+    - cron: "30 20 * * *" # 13:30 during MST
 
 concurrency:
   group: slack-recaps
@@ -36,6 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: write # only used by the keepalive step at the end
 
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +51,7 @@ jobs:
         run: |
           EVENT_SCHEDULE="${{ github.event.schedule }}"
           OFFSET=$(TZ=America/Denver date +%z)
-          DOW=$(TZ=America/Denver date +%u)  # 5=Fri
+          DOW=$(TZ=America/Denver date +%u) # 1=Mon ... 5=Fri
           TOMORROW_DAY=$(TZ=America/Denver date -d 'tomorrow' +%d)
 
           echo "Event schedule: $EVENT_SCHEDULE"
@@ -59,7 +59,7 @@ jobs:
           echo "DOW: $DOW"
           echo "Tomorrow day: $TOMORROW_DAY"
           echo "Local time: $(TZ=America/Denver date -Is)"
-          echo "UTC time:   $(date -u -Is)"
+          echo "UTC time: $(date -u -Is)"
 
           if [ "$OFFSET" = "-0600" ]; then
             EXPECTED_DAILY_CRON="30 14 * * *"
@@ -69,16 +69,13 @@ jobs:
             EXPECTED_PM_CRON="30 20 * * *"
           fi
 
-          echo "Expected daily cron: $EXPECTED_DAILY_CRON"
-          echo "Expected PM cron: $EXPECTED_PM_CRON"
-
-          # Daily: run once per day from the correct DST-aware cron.
-          if [ "$EVENT_SCHEDULE" = "$EXPECTED_DAILY_CRON" ]; then
+          # Daily: weekdays only. Monday's recap covers Sat + Sun together.
+          if [ "$EVENT_SCHEDULE" = "$EXPECTED_DAILY_CRON" ] && [ "$DOW" -le 5 ]; then
             echo "RUN_DAILY=1" >> $GITHUB_ENV
             echo "DAILY_SCHEDULE_AT_LOCAL=09:00" >> $GITHUB_ENV
           fi
 
-          # Weekly/monthly: run from the correct DST-aware PM cron.
+          # Weekly (Fridays) and monthly (last day of month) share the PM slot.
           if [ "$EVENT_SCHEDULE" = "$EXPECTED_PM_CRON" ]; then
             if [ "$DOW" = "5" ]; then
               echo "RUN_WEEKLY=1" >> $GITHUB_ENV
@@ -99,26 +96,28 @@ jobs:
           echo "DAILY_SCHEDULE_AT_LOCAL=$DAILY_SCHEDULE_AT_LOCAL"
           echo "WEEKLY_SCHEDULE_AT_LOCAL=$WEEKLY_SCHEDULE_AT_LOCAL"
           echo "MONTHLY_SCHEDULE_AT_LOCAL=$MONTHLY_SCHEDULE_AT_LOCAL"
-          echo "CHANNEL_ID (monitor) length: ${#CHANNEL_ID}"
+          echo "CHANNEL_ID length: ${#CHANNEL_ID}"
           echo "WEEKLY_POST_TO_CHANNEL_ID length: ${#WEEKLY_POST_TO_CHANNEL_ID}"
           echo "MONTHLY_POST_TO_CHANNEL_ID length: ${#MONTHLY_POST_TO_CHANNEL_ID}"
+          echo "INTERCOM_ACCESS_TOKEN length: ${#INTERCOM_ACCESS_TOKEN}"
           echo "Local time: $(TZ=America/Denver date -Is)"
-          echo "UTC time:   $(date -u -Is)"
+          echo "UTC time: $(date -u -Is)"
         env:
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           WEEKLY_POST_TO_CHANNEL_ID: ${{ secrets.WEEKLY_POST_TO_CHANNEL_ID }}
           MONTHLY_POST_TO_CHANNEL_ID: ${{ secrets.MONTHLY_POST_TO_CHANNEL_ID }}
+          INTERCOM_ACCESS_TOKEN: ${{ secrets.INTERCOM_ACCESS_TOKEN }}
 
       - name: Manual run
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          INTERCOM_ACCESS_TOKEN: ${{ secrets.INTERCOM_ACCESS_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           WEEKLY_POST_TO_CHANNEL_ID: ${{ secrets.WEEKLY_POST_TO_CHANNEL_ID }}
           MONTHLY_POST_TO_CHANNEL_ID: ${{ secrets.MONTHLY_POST_TO_CHANNEL_ID }}
           MODE: ${{ inputs.mode }}
           TZ_NAME: America/Denver
-          SCHEDULE_AT_LOCAL:
           POST_TO_CHANNEL_ID: ${{ inputs.post_to_channel_id }}
         run: python recap_bot.py
 
@@ -126,37 +125,45 @@ jobs:
         if: ${{ github.event_name == 'schedule' && env.RUN_DAILY == '1' }}
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          INTERCOM_ACCESS_TOKEN: ${{ secrets.INTERCOM_ACCESS_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           WEEKLY_POST_TO_CHANNEL_ID: ${{ secrets.WEEKLY_POST_TO_CHANNEL_ID }}
           MONTHLY_POST_TO_CHANNEL_ID: ${{ secrets.MONTHLY_POST_TO_CHANNEL_ID }}
           MODE: DAILY
           TZ_NAME: America/Denver
           SCHEDULE_AT_LOCAL: ${{ env.DAILY_SCHEDULE_AT_LOCAL }}
-          POST_TO_CHANNEL_ID:
         run: python recap_bot.py
 
       - name: Scheduled weekly recap
         if: ${{ github.event_name == 'schedule' && env.RUN_WEEKLY == '1' }}
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          INTERCOM_ACCESS_TOKEN: ${{ secrets.INTERCOM_ACCESS_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           WEEKLY_POST_TO_CHANNEL_ID: ${{ secrets.WEEKLY_POST_TO_CHANNEL_ID }}
           MONTHLY_POST_TO_CHANNEL_ID: ${{ secrets.MONTHLY_POST_TO_CHANNEL_ID }}
           MODE: WEEKLY
           TZ_NAME: America/Denver
           SCHEDULE_AT_LOCAL: ${{ env.WEEKLY_SCHEDULE_AT_LOCAL }}
-          POST_TO_CHANNEL_ID:
         run: python recap_bot.py
 
       - name: Scheduled monthly recap
         if: ${{ github.event_name == 'schedule' && env.RUN_MONTHLY == '1' }}
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          INTERCOM_ACCESS_TOKEN: ${{ secrets.INTERCOM_ACCESS_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           WEEKLY_POST_TO_CHANNEL_ID: ${{ secrets.WEEKLY_POST_TO_CHANNEL_ID }}
           MONTHLY_POST_TO_CHANNEL_ID: ${{ secrets.MONTHLY_POST_TO_CHANNEL_ID }}
           MODE: MONTHLY
           TZ_NAME: America/Denver
           SCHEDULE_AT_LOCAL: ${{ env.MONTHLY_SCHEDULE_AT_LOCAL }}
-          POST_TO_CHANNEL_ID:
         run: python recap_bot.py
+
+      # GitHub turns off scheduled workflows after 60 days without repo activity.
+      # Re-enabling the workflow on every scheduled run keeps it from being switched off again.
+      - name: Keepalive
+        if: ${{ github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow enable slack-recaps.yml --repo "${{ github.repository }}" || echo "keepalive skipped"
